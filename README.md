@@ -1,5 +1,23 @@
-# Dev Container Feature: watchman
+# Dev Container Feature: Watchman
 
-This is a devcontainer feature to add watchman for e.g. sorbet
+This repository provides a devcontainer feature for installing Facebook Watchman from the official upstream release instead of the stale distro package.
 
-based on https://github.com/devcontainers/feature-template & https://github.com/devcontainers/features/tree/main/src/node
+## Usage
+
+```json
+{
+  "features": {
+    "ghcr.io/your-org/watchman:latest": {
+      "version": "latest"
+    }
+  }
+}
+```
+
+## Notes
+
+- Uses the current upstream Watchman release from GitHub.
+- Builds and installs into `/usr/local`.
+- Keeps the `watchman` binary available on PATH for the devcontainer user.
+
+This project is based on the Dev Container feature template and current feature conventions.
