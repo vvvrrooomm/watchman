@@ -3,15 +3,116 @@ on:
   workflow_dispatch:
 
 jobs:
+  build-binaries:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - artifact: linux-amd64
+            platform: linux/amd64
+          - artifact: linux-arm64
+            platform: linux/arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Build Watchman for ${{ matrix.artifact }}
+        env:
+          VERSION: latest
+          ARTIFACT_NAME: ${{ matrix.artifact }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          mkdir -p "dist/${ARTIFACT_NAME}/bin"
+
+          docker run --rm \
+            --platform "${PLATFORM}" \
+            -e VERSION \
+            -e ARTIFACT_NAME \
+            -v "${PWD}:/workspace" \
+            -w /workspace \
+            ubuntu:24.04 \
+            bash -lc '
+              set -euo pipefail
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              apt-get install -y --no-install-recommends ca-certificates curl git build-essential autoconf automake libtool pkg-config python3 libssl-dev libevent-dev
+
+              if [ "${VERSION}" = "latest" ]; then
+                VERSION="$(curl -fsSL https://api.github.com/repos/facebook/watchman/releases/latest | python3 -c "import json,sys; data=json.load(sys.stdin); print(data.get(\"tag_name\",\"\"))")"
+              fi
+
+              if [ -z "${VERSION}" ]; then
+                echo "Unable to determine the Watchman version to install." >&2
+                exit 1
+              fi
+
+              if [[ "${VERSION}" != v* ]]; then
+                VERSION="v${VERSION}"
+              fi
+
+              tmp_dir="$(mktemp -d)"
+              trap "rm -rf \"${tmp_dir}\"" EXIT
+
+              tarball_url="https://github.com/facebook/watchman/archive/refs/tags/${VERSION}.tar.gz"
+              archive_path="${tmp_dir}/watchman.tar.gz"
+
+              curl -fsSL "${tarball_url}" -o "${archive_path}"
+              mkdir -p "${tmp_dir}/src"
+              tar -xzf "${archive_path}" -C "${tmp_dir}/src"
+              source_dir="$(find "${tmp_dir}/src" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+
+              cd "${source_dir}"
+              ./autogen.sh
+              ./configure --prefix="${tmp_dir}/install"
+              make -j"$(nproc)"
+              make install
+
+              mkdir -p "/workspace/dist/${ARTIFACT_NAME}/bin"
+              cp "${tmp_dir}/install/bin/watchman" "/workspace/dist/${ARTIFACT_NAME}/bin/watchman"
+              "${tmp_dir}/install/bin/watchman" --version > "/workspace/dist/${ARTIFACT_NAME}/version.txt"
+            '
+
+          tar -czf "watchman-${ARTIFACT_NAME}.tar.gz" -C "dist/${ARTIFACT_NAME}" .
+
+      - name: Upload ${{ matrix.artifact }} artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: watchman-${{ matrix.artifact }}
+          path: watchman-${{ matrix.artifact }}.tar.gz
+
   deploy:
     if: ${{ github.ref == 'refs/heads/main' }}
+    needs: build-binaries
     runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
       packages: write
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: watchman-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: watchman-${{ github.run_id }}
+          name: Watchman binaries ${{ github.run_id }}
+          files: |
+            release-assets/watchman-linux-amd64.tar.gz
+            release-assets/watchman-linux-arm64.tar.gz
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: "Publish Features"
         uses: devcontainers/action@v1
